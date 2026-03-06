@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, ChangeEvent, FormEvent } from 'react'
+import { useState, useEffect, ChangeEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { parseQueryItems, parseTextItems, readFile, encodeItemsToUrl } from '@/utils/helpers'
 import Header from '@/components/Header'
