@@ -1,11 +1,19 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { Suspense, useState, useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { parseQueryItems, shuffle } from '@/utils/helpers'
 import Link from 'next/link'
 
 export default function ShufflePage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50" />}>
+      <ShufflePageContent />
+    </Suspense>
+  )
+}
+
+function ShufflePageContent() {
   const searchParams = useSearchParams()
   const [items, setItems] = useState<string[]>([])
   const [shuffled, setShuffled] = useState<string[]>([])

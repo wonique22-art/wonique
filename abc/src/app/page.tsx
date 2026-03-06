@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, ChangeEvent } from 'react'
+import { Suspense, useState, useEffect, ChangeEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { parseQueryItems, parseTextItems, readFile, encodeItemsToUrl } from '@/utils/helpers'
 import Header from '@/components/Header'
@@ -10,6 +10,14 @@ import ItemList from '@/components/ItemList'
 import ActionButtons from '@/components/ActionButtons'
 
 export default function Home() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50" />}>
+      <HomeContent />
+    </Suspense>
+  )
+}
+
+function HomeContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [items, setItems] = useState<string[]>([])
