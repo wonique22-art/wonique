@@ -1,7 +1,6 @@
 'use client'
 
 import { ChangeEvent, DragEvent, useRef } from 'react'
-import { readFile } from '@/utils/helpers'
 
 interface FileUploadProps {
   onFileSelect: (file: File) => void

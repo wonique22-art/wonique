@@ -1,5 +1,3 @@
-import Link from 'next/link'
-
 interface ActionButtonsProps {
   disabled: boolean
   onPickOne: () => void

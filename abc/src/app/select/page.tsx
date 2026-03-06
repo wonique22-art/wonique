@@ -1,23 +1,20 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 import { parseQueryItems, pickRandom } from '@/utils/helpers'
 import Link from 'next/link'
 
 export default function SelectPage() {
-  const router = useRouter()
   const searchParams = useSearchParams()
   const [items, setItems] = useState<string[]>([])
   const [isSpinning, setIsSpinning] = useState(false)
   const [result, setResult] = useState<string | null>(null)
-  const [displayItems, setDisplayItems] = useState<string[]>([])
 
   useEffect(() => {
     const queryItems = searchParams.get('items')
     const parsed = parseQueryItems(queryItems)
     setItems(parsed)
-    setDisplayItems(parsed)
   }, [searchParams])
 
   const handleSpin = () => {
@@ -30,7 +27,7 @@ export default function SelectPage() {
     const spinDuration = 2000
     const spinInterval = setInterval(() => {
       const randomIndex = Math.floor(Math.random() * items.length)
-      setDisplayItems([items[randomIndex]])
+      setResult(items[randomIndex])
     }, 50)
 
     // 스핀 완료
@@ -38,14 +35,12 @@ export default function SelectPage() {
       clearInterval(spinInterval)
       const selected = pickRandom(items)
       setResult(selected)
-      setDisplayItems([selected])
       setIsSpinning(false)
     }, spinDuration)
   }
 
   const handleAgain = () => {
     setResult(null)
-    setDisplayItems(items)
   }
 
   return (
