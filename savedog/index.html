@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <title>Save Dog</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --page-top: #bfe7f3;
+        --page-bottom: #f9f0c8;
+        --frame: rgba(255, 248, 226, 0.8);
+        --frame-line: rgba(116, 83, 30, 0.22);
+        --text: #4e3910;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        touch-action: none;
+      }
+
+      body {
+        font-family: "Trebuchet MS", "Gill Sans", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top right, rgba(255, 244, 196, 0.88), transparent 28%),
+          radial-gradient(circle at bottom left, rgba(180, 210, 126, 0.44), transparent 36%),
+          linear-gradient(180deg, var(--page-top), var(--page-bottom));
+      }
+
+      .stage {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+        padding: max(12px, env(safe-area-inset-top))
+          max(12px, env(safe-area-inset-right))
+          max(12px, env(safe-area-inset-bottom))
+          max(12px, env(safe-area-inset-left));
+      }
+
+      #game-shell {
+        width: 100%;
+        height: 100%;
+        border-radius: 28px;
+        overflow: hidden;
+        box-shadow:
+          0 26px 60px rgba(55, 42, 18, 0.22),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.36);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.38), rgba(255, 255, 255, 0.12));
+        border: 1px solid var(--frame-line);
+        backdrop-filter: blur(16px);
+      }
+
+      .hud-note {
+        position: absolute;
+        left: 50%;
+        bottom: calc(max(12px, env(safe-area-inset-bottom)) + 10px);
+        transform: translateX(-50%);
+        padding: 10px 16px;
+        border-radius: 999px;
+        background: var(--frame);
+        border: 1px solid var(--frame-line);
+        box-shadow: 0 12px 24px rgba(64, 46, 14, 0.12);
+        font-size: clamp(12px, 2.2vw, 14px);
+        letter-spacing: 0.01em;
+        text-align: center;
+        pointer-events: none;
+      }
+
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <div id="game-shell"></div>
+      <div class="hud-note">모바일은 손가락, PC는 마우스로 한 번만 그릴 수 있어요.</div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
+    <script>
+      (() => {
+        const MatterLib = Phaser.Physics.Matter.Matter;
+        const { Bodies, Body } = MatterLib;
+
+        const GAME_WIDTH = 768;
+        const GAME_HEIGHT = 1028;
+        const SURVIVAL_SECONDS = 10;
+        const TOTAL_BEES = 12;
+        const BEE_SPAWN_INTERVAL = 170;
+        const DRAW_POINT_DISTANCE = 18;
+        const MIN_DRAW_POINTS = 6;
+        const MAX_DRAW_POINTS = 56;
+        const WALL_RADIUS = 14;
+        const GRID_SIZE = 32;
+        const DOG_SAFE_ZONE = {
+          offsetY: -12,
+          radiusX: 118,
+          radiusY: 146,
+          padding: 10,
+        };
+
+        class SaveDogScene extends Phaser.Scene {
+          constructor() {
+            super("save-dog");
+            this.drawPoints = [];
+            this.wallPoints = [];
+            this.wallBodies = [];
+            this.bees = [];
+            this.distanceField = [];
+            this.blockedGrid = [];
+            this.isDrawing = false;
+            this.hasCommittedWall = false;
+            this.roundEnded = false;
+            this.survivalEndsAt = 0;
+            this.spawnEvent = null;
+            this.flowFieldEvent = null;
+          }
+
+          preload() {
+            this.load.image("background", "assets/background.png");
+            this.load.image("dogIdle", "assets/dog_idle.png");
+            this.load.image("dogHurt", "assets/dog_hurt.png");
+            this.load.image("bee", "assets/bee.png");
+            this.load.image("hive", "assets/hive.png");
+          }
+
+          create() {
+            this.cameras.main.setBackgroundColor("#d8f0ea");
+            this.matter.world.setBounds(0, 0, GAME_WIDTH, GAME_HEIGHT, 52, true, true, true, true);
+            this.matter.world.engine.positionIterations = 10;
+            this.matter.world.engine.velocityIterations = 8;
+            this.matter.world.engine.constraintIterations = 4;
+            this.input.mouse?.disableContextMenu();
+
+            this.gridCols = Math.ceil(GAME_WIDTH / GRID_SIZE);
+            this.gridRows = Math.ceil(GAME_HEIGHT / GRID_SIZE);
+
+            this.createBackdrop();
+            this.createActors();
+            this.createHud();
+            this.createOverlay();
+            this.setupInput();
+            this.setupCollisions();
+            this.refreshTimerText();
+          }
+
+          createBackdrop() {
+            this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, "background").setDisplaySize(GAME_WIDTH, GAME_HEIGHT);
+
+            this.add
+              .rectangle(GAME_WIDTH / 2, 76, GAME_WIDTH * 0.88, 98, 0xfff7df, 0.8)
+              .setStrokeStyle(2, 0xe2c891, 0.85)
+              .setDepth(4);
+
+            this.add
+              .ellipse(GAME_WIDTH / 2, GAME_HEIGHT - 128, 440, 88, 0x000000, 0.12)
+              .setDepth(5);
+
+            this.wallGraphics = this.add.graphics().setDepth(28);
+            this.drawPreviewGraphics = this.add.graphics().setDepth(29);
+
+            this.startPulse = this.add
+              .circle(GAME_WIDTH / 2, GAME_HEIGHT * 0.56, 132, 0xfff3b1, 0.16)
+              .setDepth(6);
+          }
+
+          createActors() {
+            this.hivePosition = new Phaser.Math.Vector2(618, 180);
+            this.hive = this.add.image(this.hivePosition.x, this.hivePosition.y, "hive").setScale(0.19).setDepth(18);
+
+            this.dogPosition = new Phaser.Math.Vector2(392, 782);
+            this.dogShadow = this.add.ellipse(this.dogPosition.x, 868, 180, 34, 0x34220a, 0.18).setDepth(16);
+            this.dog = this.add.image(this.dogPosition.x, this.dogPosition.y, "dogIdle").setScale(0.2).setDepth(24);
+
+            this.dogBodies = [
+              Bodies.circle(this.dogPosition.x, this.dogPosition.y + 18, 66, {
+                isStatic: true,
+                label: "dog-solid",
+                friction: 0.9,
+              }),
+              Bodies.circle(this.dogPosition.x - 54, this.dogPosition.y - 74, 36, {
+                isStatic: true,
+                label: "dog-solid",
+                friction: 0.9,
+              }),
+              Bodies.circle(this.dogPosition.x + 54, this.dogPosition.y - 74, 36, {
+                isStatic: true,
+                label: "dog-solid",
+                friction: 0.9,
+              }),
+            ];
+
+            this.dogSensors = [
+              Bodies.circle(this.dogPosition.x, this.dogPosition.y + 16, 74, {
+                isStatic: true,
+                isSensor: true,
+                label: "dog",
+              }),
+              Bodies.circle(this.dogPosition.x - 54, this.dogPosition.y - 78, 42, {
+                isStatic: true,
+                isSensor: true,
+                label: "dog",
+              }),
+              Bodies.circle(this.dogPosition.x + 54, this.dogPosition.y - 78, 42, {
+                isStatic: true,
+                isSensor: true,
+                label: "dog",
+              }),
+            ];
+
+            this.matter.world.add([...this.dogBodies, ...this.dogSensors]);
+          }
+
+          createHud() {
+            this.titleText = this.add
+              .text(56, 44, "SAVE DOG", {
+                fontFamily: '"Trebuchet MS", "Gill Sans", sans-serif',
+                fontSize: "34px",
+                fontStyle: "bold",
+                color: "#6a4a14",
+                stroke: "#fff7dc",
+                strokeThickness: 10,
+              })
+              .setOrigin(0, 0.5)
+              .setDepth(12);
+
+            this.timerPlate = this.add.graphics().setDepth(12);
+            this.drawTimerPlate();
+
+            this.timerText = this.add
+              .text(GAME_WIDTH / 2, 62, "DRAW", {
+                fontFamily: '"Trebuchet MS", "Gill Sans", sans-serif',
+                fontSize: "40px",
+                fontStyle: "bold",
+                color: "#5b4313",
+              })
+              .setOrigin(0.5)
+              .setDepth(13);
+
+            this.statusText = this.add
+              .text(GAME_WIDTH / 2, 118, "강아지를 감쌀 벽을 한 번에 그려 주세요", {
+                fontFamily: '"Trebuchet MS", "Gill Sans", sans-serif',
+                fontSize: "22px",
+                color: "#644515",
+                align: "center",
+              })
+              .setOrigin(0.5)
+              .setDepth(12);
+
+            this.helperText = this.add
+              .text(GAME_WIDTH / 2, GAME_HEIGHT - 80, "선을 그린 뒤 손을 떼면 10초 생존전이 시작됩니다.", {
+                fontFamily: '"Trebuchet MS", "Gill Sans", sans-serif',
+                fontSize: "24px",
+                color: "#fffef0",
+                stroke: "#5f4918",
+                strokeThickness: 8,
+                align: "center",
+              })
+              .setOrigin(0.5)
+              .setDepth(12);
+          }
+
+          createOverlay() {
+            const dimmer = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x211706, 0.48).setOrigin(0).setDepth(100);
+
+            const panel = this.add.graphics().setDepth(101);
+            panel.fillStyle(0xfff6df, 0.95);
+            panel.lineStyle(3, 0xe7c887, 1);
+            panel.fillRoundedRect(GAME_WIDTH / 2 - 224, GAME_HEIGHT / 2 - 150, 448, 300, 28);
+            panel.strokeRoundedRect(GAME_WIDTH / 2 - 224, GAME_HEIGHT / 2 - 150, 448, 300, 28);
+
+            const title = this.add
+              .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 58, "", {
+                fontFamily: '"Trebuchet MS", "Gill Sans", sans-serif',
+                fontSize: "48px",
+                fontStyle: "bold",
+                color: "#533711",
+              })
+              .setOrigin(0.5)
+              .setDepth(102);
+
+            const subtitle = this.add
+              .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 6, "", {
+                fontFamily: '"Trebuchet MS", "Gill Sans", sans-serif',
+                fontSize: "24px",
+                color: "#6c4d1a",
+                align: "center",
+                wordWrap: { width: 340 },
+              })
+              .setOrigin(0.5)
+              .setDepth(102);
+
+            const buttonBg = this.add
+              .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 92, 210, 64, 0xf0bf5d, 1)
+              .setStrokeStyle(2, 0x9f6b11, 0.9)
+              .setDepth(102);
+            const buttonLabel = this.add
+              .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 92, "다시 하기", {
+                fontFamily: '"Trebuchet MS", "Gill Sans", sans-serif',
+                fontSize: "28px",
+                fontStyle: "bold",
+                color: "#533711",
+              })
+              .setOrigin(0.5)
+              .setDepth(103);
+
+            const restartRound = () => this.scene.restart();
+            buttonBg.setInteractive({ useHandCursor: true });
+            buttonLabel.setInteractive({ useHandCursor: true });
+            buttonBg.on("pointerover", () => buttonBg.setFillStyle(0xf7cc75, 1));
+            buttonBg.on("pointerout", () => buttonBg.setFillStyle(0xf0bf5d, 1));
+            buttonBg.on("pointerdown", restartRound);
+            buttonLabel.on("pointerdown", restartRound);
+
+            this.overlay = this.add
+              .container(0, 0, [dimmer, panel, title, subtitle, buttonBg, buttonLabel])
+              .setDepth(100)
+              .setVisible(false);
+            this.overlayTitle = title;
+            this.overlaySubtitle = subtitle;
+          }
+
+          drawTimerPlate() {
+            this.timerPlate.clear();
+            this.timerPlate.fillStyle(0xfff2c9, 0.92);
+            this.timerPlate.lineStyle(2, 0xe0b96e, 0.95);
+            this.timerPlate.fillRoundedRect(GAME_WIDTH / 2 - 118, 24, 236, 76, 26);
+            this.timerPlate.strokeRoundedRect(GAME_WIDTH / 2 - 118, 24, 236, 76, 26);
+          }
+
+          setupInput() {
+            this.input.on("pointerdown", (pointer) => {
+              if (this.roundEnded || this.hasCommittedWall || pointer.y < 132) {
+                return;
+              }
+
+              this.isDrawing = true;
+              this.drawPoints = [this.sanitizeDrawPoint(pointer.worldX, pointer.worldY)];
+              this.statusText.setText("손을 떼기 전까지 원하는 모양으로 이어 그릴 수 있어요");
+              this.helperText.setText("벌이 나오기 전에 강아지를 감쌀 벽을 완성하세요.");
+              this.drawDrawPreview();
+            });
+
+            this.input.on("pointermove", (pointer) => {
+              if (!this.isDrawing || this.roundEnded || this.hasCommittedWall || !pointer.isDown) {
+                return;
+              }
+
+              const point = this.sanitizeDrawPoint(pointer.worldX, pointer.worldY);
+              const last = this.drawPoints[this.drawPoints.length - 1];
+              const distance = Phaser.Math.Distance.Between(last.x, last.y, point.x, point.y);
+
+              if (distance < DRAW_POINT_DISTANCE) {
+                return;
+              }
+
+              const steps = Math.max(1, Math.floor(distance / DRAW_POINT_DISTANCE));
+
+              for (let step = 1; step <= steps; step += 1) {
+                if (this.drawPoints.length >= MAX_DRAW_POINTS) {
+                  break;
+                }
+
+                const t = step / steps;
+                const sample = this.sanitizeDrawPoint(
+                  Phaser.Math.Linear(last.x, point.x, t),
+                  Phaser.Math.Linear(last.y, point.y, t)
+                );
+                const previous = this.drawPoints[this.drawPoints.length - 1];
+                if (Phaser.Math.Distance.Between(previous.x, previous.y, sample.x, sample.y) >= 8) {
+                  this.drawPoints.push(sample);
+                }
+              }
+
+              this.drawDrawPreview();
+            });
+
+            const finishStroke = () => {
+              if (!this.isDrawing || this.roundEnded || this.hasCommittedWall) {
+                return;
+              }
+
+              this.isDrawing = false;
+
+              if (this.drawPoints.length < MIN_DRAW_POINTS) {
+                this.drawPoints = [];
+                this.drawPreviewGraphics.clear();
+                this.statusText.setText("벽이 너무 짧아요. 조금 더 길게 그려 주세요");
+                this.helperText.setText("강아지 주변을 크게 감싸면 조금 더 버티기 쉬워요.");
+                return;
+              }
+
+              this.commitWall();
+            };
+
+            this.input.on("pointerup", finishStroke);
+            this.input.on("gameout", finishStroke);
+          }
+
+          setupCollisions() {
+            this.matter.world.on("collisionstart", (event) => {
+              if (this.roundEnded) {
+                return;
+              }
+
+              for (const pair of event.pairs) {
+                const labels = [pair.bodyA.label, pair.bodyB.label];
+                if (labels.includes("dog") && labels.includes("bee")) {
+                  this.finishRound(false);
+                  break;
+                }
+              }
+            });
+          }
+
+          clampPoint(x, y) {
+            return {
+              x: Phaser.Math.Clamp(x, 24, GAME_WIDTH - 24),
+              y: Phaser.Math.Clamp(y, 148, GAME_HEIGHT - 72),
+            };
+          }
+
+          sanitizeDrawPoint(x, y) {
+            const point = this.clampPoint(x, y);
+            return this.projectPointOutsideDog(point);
+          }
+
+          projectPointOutsideDog(point) {
+            const centerX = this.dogPosition.x;
+            const centerY = this.dogPosition.y + DOG_SAFE_ZONE.offsetY;
+            const dx = point.x - centerX;
+            const dy = point.y - centerY;
+            const radiusX = DOG_SAFE_ZONE.radiusX + DOG_SAFE_ZONE.padding;
+            const radiusY = DOG_SAFE_ZONE.radiusY + DOG_SAFE_ZONE.padding;
+            const normalized = (dx * dx) / (radiusX * radiusX) + (dy * dy) / (radiusY * radiusY);
+
+            if (normalized >= 1) {
+              return point;
+            }
+
+            const angle = Math.atan2(dy || -1, dx || 0.0001);
+            return {
+              x: centerX + Math.cos(angle) * radiusX,
+              y: centerY + Math.sin(angle) * radiusY,
+            };
+          }
+
+          drawDrawPreview() {
+            this.drawPreviewGraphics.clear();
+
+            if (this.drawPoints.length < 2) {
+              return;
+            }
+
+            this.drawPreviewGraphics.lineStyle(20, 0x111111, 0.35);
+            this.drawPreviewGraphics.beginPath();
+            this.drawPreviewGraphics.moveTo(this.drawPoints[0].x, this.drawPoints[0].y);
+
+            for (let index = 1; index < this.drawPoints.length; index += 1) {
+              const point = this.drawPoints[index];
+              this.drawPreviewGraphics.lineTo(point.x, point.y);
+            }
+
+            this.drawPreviewGraphics.strokePath();
+
+            for (const point of this.drawPoints) {
+              this.drawPreviewGraphics.fillStyle(0x111111, 0.35);
+              this.drawPreviewGraphics.fillCircle(point.x, point.y, 10);
+            }
+          }
+
+          commitWall() {
+            this.hasCommittedWall = true;
+            this.drawPreviewGraphics.clear();
+            this.startPulse.setVisible(false);
+
+            const filteredPoints = this.filterDrawPoints(this.drawPoints);
+            this.wallPoints = filteredPoints;
+
+            for (const point of filteredPoints) {
+              this.wallBodies.push(
+                Bodies.circle(point.x, point.y, WALL_RADIUS, {
+                  isStatic: true,
+                  label: "wall",
+                  friction: 0.8,
+                  restitution: 0.02,
+                })
+              );
+            }
+
+            for (let index = 1; index < filteredPoints.length; index += 1) {
+              const start = filteredPoints[index - 1];
+              const end = filteredPoints[index];
+              const length = Phaser.Math.Distance.Between(start.x, start.y, end.x, end.y);
+              const angle = Phaser.Math.Angle.Between(start.x, start.y, end.x, end.y);
+              this.wallBodies.push(
+                Bodies.rectangle(
+                  (start.x + end.x) / 2,
+                  (start.y + end.y) / 2,
+                  length + WALL_RADIUS * 1.4,
+                  WALL_RADIUS * 2.1,
+                  {
+                    isStatic: true,
+                    angle,
+                    label: "wall",
+                    friction: 0.8,
+                    restitution: 0.02,
+                  }
+                )
+              );
+            }
+
+            this.matter.world.add(this.wallBodies);
+
+            this.statusText.setText("벌이 몰려옵니다. 10초 동안 강아지를 지켜 주세요");
+            this.helperText.setText("이제 방벽은 그린 모양 그대로 유지됩니다. 틈만 잘 막아 주세요.");
+            this.survivalEndsAt = this.time.now + SURVIVAL_SECONDS * 1000;
+
+            this.spawnSwarm();
+            this.rebuildFlowField();
+            this.flowFieldEvent = this.time.addEvent({
+              delay: 220,
+              loop: true,
+              callback: () => this.rebuildFlowField(),
+            });
+          }
+
+          filterDrawPoints(points) {
+            const filtered = [points[0]];
+
+            for (let index = 1; index < points.length; index += 1) {
+              const current = points[index];
+              const last = filtered[filtered.length - 1];
+              if (Phaser.Math.Distance.Between(last.x, last.y, current.x, current.y) >= DRAW_POINT_DISTANCE) {
+                filtered.push(current);
+              }
+            }
+
+            if (filtered.length > MAX_DRAW_POINTS) {
+              const reduced = [];
+              const stride = (filtered.length - 1) / (MAX_DRAW_POINTS - 1);
+              for (let index = 0; index < MAX_DRAW_POINTS; index += 1) {
+                reduced.push(filtered[Math.round(index * stride)]);
+              }
+              return reduced;
+            }
+
+            return filtered;
+          }
+
+          spawnSwarm() {
+            let spawned = 0;
+
+            const spawnOne = () => {
+              const spawnX = this.hivePosition.x + Phaser.Math.Between(-18, 24);
+              const spawnY = this.hivePosition.y + Phaser.Math.Between(-18, 18);
+              const body = Bodies.circle(spawnX, spawnY, 20, {
+                label: "bee",
+                restitution: 0.2,
+                friction: 0.1,
+                frictionAir: 0.022,
+                density: 0.0018,
+              });
+
+              const sprite = this.add.image(spawnX, spawnY, "bee").setScale(0.108).setDepth(26);
+              const bee = this.matter.add.gameObject(sprite, body);
+
+              bee.setIgnoreGravity(true);
+              bee.setFrictionAir(0.022);
+              bee.setBounce(0.2);
+
+              this.bees.push({
+                sprite,
+                body,
+                baseScale: 0.108,
+                noise: Phaser.Math.FloatBetween(0, Math.PI * 2),
+                nextTargetRefresh: 0,
+                target: this.dogPosition.clone(),
+              });
+            };
+
+            spawnOne();
+            spawned += 1;
+
+            this.spawnEvent = this.time.addEvent({
+              delay: BEE_SPAWN_INTERVAL,
+              loop: true,
+              callback: () => {
+                if (spawned >= TOTAL_BEES) {
+                  this.spawnEvent?.remove(false);
+                  this.spawnEvent = null;
+                  return;
+                }
+
+                spawnOne();
+                spawned += 1;
+              },
+            });
+          }
+
+          rebuildFlowField() {
+            const blocked = Array.from({ length: this.gridRows }, () => Array(this.gridCols).fill(false));
+            const markDisc = (x, y, radius) => {
+              const startCol = Math.max(0, Math.floor((x - radius) / GRID_SIZE));
+              const endCol = Math.min(this.gridCols - 1, Math.ceil((x + radius) / GRID_SIZE));
+              const startRow = Math.max(0, Math.floor((y - radius) / GRID_SIZE));
+              const endRow = Math.min(this.gridRows - 1, Math.ceil((y + radius) / GRID_SIZE));
+
+              for (let row = startRow; row <= endRow; row += 1) {
+                for (let col = startCol; col <= endCol; col += 1) {
+                  const centerX = col * GRID_SIZE + GRID_SIZE / 2;
+                  const centerY = row * GRID_SIZE + GRID_SIZE / 2;
+                  if (Phaser.Math.Distance.Between(centerX, centerY, x, y) <= radius) {
+                    blocked[row][col] = true;
+                  }
+                }
+              }
+            };
+
+            for (let index = 0; index < this.wallPoints.length; index += 1) {
+              const node = this.wallPoints[index];
+              markDisc(node.x, node.y, WALL_RADIUS + 10);
+
+              if (index === 0) {
+                continue;
+              }
+
+              const previous = this.wallPoints[index - 1];
+              const distance = Phaser.Math.Distance.Between(previous.x, previous.y, node.x, node.y);
+              const samples = Math.max(1, Math.ceil(distance / 12));
+
+              for (let sample = 1; sample < samples; sample += 1) {
+                const t = sample / samples;
+                markDisc(
+                  Phaser.Math.Linear(previous.x, node.x, t),
+                  Phaser.Math.Linear(previous.y, node.y, t),
+                  WALL_RADIUS + 8
+                );
+              }
+            }
+
+            const goal = this.worldToCell(this.dogPosition.x, this.dogPosition.y);
+            blocked[goal.row][goal.col] = false;
+
+            const distances = Array.from({ length: this.gridRows }, () => Array(this.gridCols).fill(Number.POSITIVE_INFINITY));
+            const queue = [{ col: goal.col, row: goal.row }];
+            let cursor = 0;
+            distances[goal.row][goal.col] = 0;
+
+            while (cursor < queue.length) {
+              const current = queue[cursor];
+              cursor += 1;
+              const nextDistance = distances[current.row][current.col] + 1;
+
+              for (const [dx, dy] of [
+                [1, 0],
+                [-1, 0],
+                [0, 1],
+                [0, -1],
+                [1, 1],
+                [-1, 1],
+                [1, -1],
+                [-1, -1],
+              ]) {
+                const col = current.col + dx;
+                const row = current.row + dy;
+                if (col < 0 || row < 0 || col >= this.gridCols || row >= this.gridRows || blocked[row][col]) {
+                  continue;
+                }
+
+                if (distances[row][col] <= nextDistance) {
+                  continue;
+                }
+
+                distances[row][col] = nextDistance;
+                queue.push({ col, row });
+              }
+            }
+
+            this.blockedGrid = blocked;
+            this.distanceField = distances;
+          }
+
+          worldToCell(x, y) {
+            return {
+              col: Phaser.Math.Clamp(Math.floor(x / GRID_SIZE), 0, this.gridCols - 1),
+              row: Phaser.Math.Clamp(Math.floor(y / GRID_SIZE), 0, this.gridRows - 1),
+            };
+          }
+
+          cellToWorld(col, row) {
+            return new Phaser.Math.Vector2(col * GRID_SIZE + GRID_SIZE / 2, row * GRID_SIZE + GRID_SIZE / 2);
+          }
+
+          getNextFlowTarget(x, y) {
+            if (!this.distanceField.length) {
+              return this.dogPosition.clone();
+            }
+
+            const current = this.worldToCell(x, y);
+            let best = { col: current.col, row: current.row };
+            let bestDistance = this.distanceField[current.row][current.col];
+
+            for (const [dx, dy] of [
+              [0, 0],
+              [1, 0],
+              [-1, 0],
+              [0, 1],
+              [0, -1],
+              [1, 1],
+              [-1, 1],
+              [1, -1],
+              [-1, -1],
+            ]) {
+              const col = current.col + dx;
+              const row = current.row + dy;
+
+              if (col < 0 || row < 0 || col >= this.gridCols || row >= this.gridRows || this.blockedGrid[row][col]) {
+                continue;
+              }
+
+              const value = this.distanceField[row][col];
+              if (value < bestDistance) {
+                bestDistance = value;
+                best = { col, row };
+              }
+            }
+
+            if (!Number.isFinite(bestDistance)) {
+              return this.dogPosition.clone();
+            }
+
+            return this.cellToWorld(best.col, best.row);
+          }
+
+          refreshTimerText() {
+            if (!this.hasCommittedWall) {
+              this.timerText.setText("DRAW");
+              return;
+            }
+
+            const remaining = Math.max(0, (this.survivalEndsAt - this.time.now) / 1000);
+            this.timerText.setText(remaining.toFixed(1));
+          }
+
+          update(_, delta) {
+            const now = this.time.now;
+
+            if (!this.roundEnded) {
+              const wave = Math.sin(now / 380) * 0.004;
+              this.startPulse.setScale(1 + Math.sin(now / 500) * 0.1);
+              this.hive.setScale(0.19 + wave);
+              this.dog.setScale(0.2 + Math.sin(now / 330) * 0.005);
+            }
+
+            this.redrawWall();
+            this.updateBees(delta);
+            this.refreshTimerText();
+
+            if (this.hasCommittedWall && !this.roundEnded && now >= this.survivalEndsAt) {
+              this.finishRound(true);
+            }
+          }
+
+          redrawWall() {
+            this.wallGraphics.clear();
+
+            if (this.wallPoints.length < 2) {
+              return;
+            }
+
+            this.wallGraphics.lineStyle(WALL_RADIUS * 2, 0x111111, 1);
+            this.wallGraphics.beginPath();
+            this.wallGraphics.moveTo(this.wallPoints[0].x, this.wallPoints[0].y);
+
+            for (let index = 1; index < this.wallPoints.length; index += 1) {
+              const node = this.wallPoints[index];
+              this.wallGraphics.lineTo(node.x, node.y);
+            }
+
+            this.wallGraphics.strokePath();
+
+            for (const node of this.wallPoints) {
+              this.wallGraphics.fillStyle(0x111111, 1);
+              this.wallGraphics.fillCircle(node.x, node.y, WALL_RADIUS);
+            }
+          }
+
+          updateBees(delta) {
+            if (!this.bees.length) {
+              return;
+            }
+
+            const elapsedFactor = delta / 16.6667;
+
+            for (const bee of this.bees) {
+              const position = bee.body.position;
+
+              if (this.time.now >= bee.nextTargetRefresh) {
+                bee.target = this.getNextFlowTarget(position.x, position.y);
+                bee.nextTargetRefresh = this.time.now + Phaser.Math.Between(80, 150);
+              }
+
+              const separation = new Phaser.Math.Vector2(0, 0);
+
+              for (const other of this.bees) {
+                if (other === bee) {
+                  continue;
+                }
+
+                const dx = position.x - other.body.position.x;
+                const dy = position.y - other.body.position.y;
+                const distanceSq = dx * dx + dy * dy;
+
+                if (distanceSq > 0 && distanceSq < 3600) {
+                  separation.x += dx / distanceSq;
+                  separation.y += dy / distanceSq;
+                }
+              }
+
+              const toTarget = new Phaser.Math.Vector2(bee.target.x - position.x, bee.target.y - position.y);
+              if (toTarget.lengthSq() > 1) {
+                toTarget.normalize();
+              }
+
+              if (separation.lengthSq() > 0.0001) {
+                separation.normalize().scale(0.46);
+              }
+
+              const wobble = new Phaser.Math.Vector2(
+                Math.cos(this.time.now / 120 + bee.noise),
+                Math.sin(this.time.now / 150 + bee.noise * 0.8)
+              ).scale(0.14);
+
+              const steer = toTarget.add(separation).add(wobble).normalize();
+              Body.applyForce(bee.body, position, {
+                x: steer.x * 0.00095 * elapsedFactor,
+                y: steer.y * 0.00095 * elapsedFactor,
+              });
+
+              const speed = Math.hypot(bee.body.velocity.x, bee.body.velocity.y);
+              if (speed > 5.4) {
+                Body.setVelocity(bee.body, {
+                  x: (bee.body.velocity.x / speed) * 5.4,
+                  y: (bee.body.velocity.y / speed) * 5.4,
+                });
+              }
+
+              if (position.x < 30 || position.x > GAME_WIDTH - 30 || position.y < 30 || position.y > GAME_HEIGHT - 30) {
+                const correction = new Phaser.Math.Vector2(this.dogPosition.x - position.x, this.dogPosition.y - position.y).normalize();
+                Body.applyForce(bee.body, position, {
+                  x: correction.x * 0.0012,
+                  y: correction.y * 0.0012,
+                });
+              }
+
+              const angle = Math.atan2(bee.body.velocity.y, bee.body.velocity.x);
+              Body.setAngle(bee.body, angle);
+
+              bee.sprite.setPosition(position.x, position.y);
+              bee.sprite.setRotation(angle);
+              bee.sprite.setScale(bee.baseScale + Math.sin(this.time.now / 45 + bee.noise) * 0.006);
+            }
+          }
+
+          finishRound(success) {
+            if (this.roundEnded) {
+              return;
+            }
+
+            this.roundEnded = true;
+            this.isDrawing = false;
+            this.spawnEvent?.remove(false);
+            this.flowFieldEvent?.remove(false);
+            this.spawnEvent = null;
+            this.flowFieldEvent = null;
+
+            if (!success) {
+              this.dog.setTexture("dogHurt");
+              this.statusText.setText("강아지가 벌에 닿았어요");
+              this.helperText.setText("틈이 적고 무게 중심이 낮은 벽이 더 오래 버텨 줍니다.");
+            } else {
+              this.statusText.setText("10초 버티기에 성공했습니다");
+              this.helperText.setText("다른 모양으로도 막아 보세요.");
+            }
+
+            this.overlayTitle.setText(success ? "성공!" : "실패!");
+            this.overlaySubtitle.setText(
+              success
+                ? "벌이 몰려와도 강아지를 끝까지 지켜냈어요.\n다시 도전해서 더 안정적인 벽을 만들어 보세요."
+                : "벌 한 마리만 닿아도 바로 패배합니다.\n벽의 시작점과 끝점이 강아지 가까이 모이도록 그려 보세요."
+            );
+            this.overlay.setVisible(true);
+            this.timerText.setText(success ? "SAFE" : "OUCH");
+          }
+        }
+
+        const game = new Phaser.Game({
+          type: Phaser.AUTO,
+          parent: "game-shell",
+          width: GAME_WIDTH,
+          height: GAME_HEIGHT,
+          backgroundColor: "#d8f0ea",
+          scene: [SaveDogScene],
+          scale: {
+            mode: Phaser.Scale.FIT,
+            autoCenter: Phaser.Scale.CENTER_BOTH,
+          },
+          physics: {
+            default: "matter",
+            matter: {
+              gravity: { y: 1.04 },
+              enableSleep: true,
+              debug: false,
+            },
+          },
+          render: {
+            antialias: true,
+            pixelArt: false,
+          },
+        });
+
+        window.addEventListener("resize", () => game.scale.refresh());
+      })();
+    </script>
+  </body>
+</html>
